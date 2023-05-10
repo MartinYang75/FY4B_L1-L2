@@ -110,10 +110,65 @@ class FY4B_AGRI_L1(object):
         return data
 
 
-if __name__ == "__main__":
-    filename = "2022_06_05/FY4B-_AGRI--_N_DISK_1330E_L1-_FDI-_MULT_NOM_20220604200000_20220604201459_4000M_V0001.HDF"
+class FY4B_AGRI_L2(object):
+    def __init__(self, file_path, geo_desc=None):
+        self.dataset = xr.open_dataset(file_path)
+        self.resolution = file_path[-14:-9]
+        self.set_geo_desc(geo_desc)
 
+    def __del__(self):
+        self.dataset.close()
+
+    def set_geo_desc(self, geo_desc):
+        if geo_desc is None:
+            self.line = self.column = self.geo_desc = None
+            return
+        # 先乘1000取整是为了减少浮点数的精度误差累积问题
+        lat_S, lat_N, lon_W, lon_E, step = [1000 * x for x in geo_desc]
+        lat = np.arange(lat_N, lat_S - 1, -step) / 1000
+        lon = np.arange(lon_W, lon_E + 1, step) / 1000
+        lon_mesh, lat_mesh = np.meshgrid(lon, lat)
+        # 求geo_desc对应的标称全圆盘行列号
+        line, column = latlon2linecolumn(lat_mesh, lon_mesh, self.resolution)
+        self.line = xr.DataArray(line, coords=(('lat', lat), ('lon', lon)), name='line')
+        self.column = xr.DataArray(column, coords=(('lat', lat), ('lon', lon)), name='column')
+        self.geo_desc = geo_desc
+
+    def extract(self, channel_name, geo_desc=None, interp_method='nearest'):
+        """
+        按通道名和定标方式提取geo_desc对应的数据
+        channel_name：要提取的通道名（如'Channel01'）
+
+        calibration: {'dn', 'reflectance', 'radiance', 'brightness_temperature'}
+        """
+        if geo_desc and geo_desc != self.geo_desc:
+            self.set_geo_desc(geo_desc)
+        data = self.dataset[f'{channel_name}'][:]
+        line = column = [i for i in range(2748)]
+        data = np.ma.masked_equal(data.values, 65535)  # space value
+        data = np.ma.masked_equal(data, -1)  # fill value
+        data = xr.DataArray(data, coords=[line, column], dims=['line', 'column'])
+        if self.geo_desc:
+            # 若geo_desc已指定，则插值到对应网格
+            data = data.interp(line=self.line
+                                         , column=self.column
+                                         , method=interp_method)
+            del data.coords['line'], data.coords['column']
+        else:
+            # 若geo_desc为None，则保留原始NOM网格
+            pass
+        return data
+
+
+if __name__ == "__main__":
+    filepath = 'FY4B/FY4B-_AGRI--_N_DISK_1330E_L2-_CFR-_MULT_NOM_20230509143000_20230509144459_4000M_V0001.NC'
     geo_desc = [17, 54, 73, 135, 0.1]
-    file = FY4B_AGRI_L1(filename, geo_desc)
-    channel12 = file.extract('Channel02', calibration='reflectance')
-    print(channel12)
+    file = FY4B_AGRI_L2(filepath, geo_desc)
+    cfr = file.extract('CFR')
+    print(cfr)
+    # filename = "2022_06_05/FY4B-_AGRI--_N_DISK_1330E_L1-_FDI-_MULT_NOM_20220604200000_20220604201459_4000M_V0001.HDF"
+    #
+    # geo_desc = [17, 54, 73, 135, 0.1]
+    # file = FY4B_AGRI_L1(filename, geo_desc)
+    # channel12 = file.extract('Channel02', calibration='reflectance')
+    # print(channel12)
